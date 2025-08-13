@@ -1,0 +1,17 @@
+project:
+  league: "EPL"
+  seed: 42
+
+data:
+  matches_csv: "data/raw/matches.csv"   # date, home, away, home_goals, away_goals, odds_H, odds_D, odds_A
+  fixtures_csv: "data/processed/fixtures.csv"
+
+training:
+  start_date: "2015-08-01"
+  end_date: "2024-06-01"
+  cv_years_per_fold: 1
+  model_dir: "models/V1"
+
+betting:
+  ev_threshold: 0.02
+  kelly_fraction: 0.5

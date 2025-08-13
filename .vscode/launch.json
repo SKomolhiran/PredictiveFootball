@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Train model",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/train.py",
+      "args": [
+        "--config",
+        "config/config.yaml"
+      ]
+    },
+    {
+      "name": "Backtest",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/backtest.py",
+      "args": [
+        "--config",
+        "config/config.yaml",
+        "--from",
+        "2019-01-01",
+        "--to",
+        "2024-12-31"
+      ]
+    }
+  ]
+}

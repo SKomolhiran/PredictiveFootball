@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.conda/
+
+# Data & models
+data/processed/
+models/
+mlruns/
+
+# VS Code
+.vscode/settings.json
