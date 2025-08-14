@@ -1,0 +1,2 @@
+match_id,season,date,home,away,home_goals,away_goals,fulltime_result,referee,attendance,pre_odds_H,pre_odds_D,pre_odds_A,pre_source,close_odds_H,close_odds_D,close_odds_A,close_source,pre_p_H,pre_p_D,pre_p_A,pre_qsum,pre_vig_ok,close_p_H,close_p_D,close_p_A,close_qsum,close_vig_ok,HS,AS,HST,AST,HF,AF,HY,AY,HR,AR,HC,AC,HFKC,AFKC,HO,AO,HHW,AHW,HBP,ABP,source_file
+2014-15__nan_vs_nan,2014-15,,,,,,,,,,,,,,,,,,,,,False,,,,,False,,,,,,,,,,,,,,,,,,,,,EPL_14_15.csv
