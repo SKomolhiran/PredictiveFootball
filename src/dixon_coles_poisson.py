@@ -71,7 +71,7 @@ class DixonColesPoisson:
         
         total_likelihood = 0.0
         
-        for _, match in matches_df.iterrows():
+        for idx, (_, match) in enumerate(matches_df.iterrows()):
             home_idx = team_to_idx[match['home']]
             away_idx = team_to_idx[match['away']]
             
@@ -80,7 +80,7 @@ class DixonColesPoisson:
             lambda_away = np.exp(mu + attacks[away_idx] - defenses[home_idx])
             
             # Add likelihood contribution
-            weight = weights[match.name] if match.name in weights.index else 1.0
+            weight = weights.iloc[idx] if idx < len(weights) else 1.0
             total_likelihood += self._likelihood_contribution(
                 match['home_goals'], match['away_goals'],
                 lambda_home, lambda_away, rho, weight
@@ -90,34 +90,54 @@ class DixonColesPoisson:
     
     def fit(self, matches_df: pd.DataFrame, reference_date=None):
         """
-        Fit the Dixon-Coles model
+        Fit the Dixon-Coles model using ONLY HISTORICAL MATCH RESULTS
+        
+        CRITICAL: This function uses historical outcomes to estimate team strengths.
+        It should NEVER see the current match being predicted to avoid data leakage!
         
         Args:
-            matches_df: DataFrame with columns ['date', 'home', 'away', 'home_goals', 'away_goals']
-            reference_date: Date for time weighting (uses latest date if None)
+            matches_df: DataFrame with HISTORICAL results ['date', 'home', 'away', 'home_goals', 'away_goals']
+            reference_date: Date for time weighting (uses latest HISTORICAL date if None)
         """
-        matches_df = matches_df.copy().reset_index()
-        matches_df['date'] = pd.to_datetime(matches_df['date'])
+        print(f"🔧 Training Dixon-Coles on {len(matches_df)} HISTORICAL matches...")
+        
+        # CRITICAL: Only use completed historical matches for training
+        training_matches = matches_df.copy().reset_index()
+        training_matches['date'] = pd.to_datetime(training_matches['date'])
+        
+        # Validate we have actual results (not future matches)
+        missing_results = training_matches[['home_goals', 'away_goals']].isna().any(axis=1)
+        if missing_results.any():
+            print(f"⚠️  Removing {missing_results.sum()} matches without results (future/incomplete matches)")
+            training_matches = training_matches[~missing_results].copy()
+        
+        if len(training_matches) == 0:
+            raise ValueError("No historical matches with results found for training!")
+        
+        print(f"✅ Training on {len(training_matches)} completed historical matches")
+        print(f"   Date range: {training_matches['date'].min()} to {training_matches['date'].max()}")
         
         if reference_date is None:
-            reference_date = matches_df['date'].max()
+            reference_date = training_matches['date'].max()
         else:
             reference_date = pd.to_datetime(reference_date)
         
-        # Get unique teams
-        self.teams = sorted(set(matches_df['home'].unique()) | set(matches_df['away'].unique()))
+        # Get unique teams from historical data
+        self.teams = sorted(set(training_matches['home'].unique()) | set(training_matches['away'].unique()))
         team_to_idx = {team: idx for idx, team in enumerate(self.teams)}
         n_teams = len(self.teams)
         
-        # Calculate time weights
-        matches_df['days_ago'] = (reference_date - matches_df['date']).dt.days
-        matches_df['weight'] = np.exp(-self.xi * matches_df['days_ago'])
-        weights = matches_df.set_index(matches_df.index)['weight']
+        print(f"   Teams: {n_teams} unique teams")
+        
+        # Calculate time weights for historical matches
+        training_matches['days_ago'] = (reference_date - training_matches['date']).dt.days
+        training_matches['weight'] = np.exp(-self.xi * training_matches['days_ago'])
+        weights = training_matches.set_index(training_matches.index)['weight']
         
         # Initial parameter guess
         n_params = 3 + 2 * (n_teams - 1)  # mu, home_adv, rho, attacks[:-1], defenses[:-1]
         initial_params = np.random.normal(0, 0.1, n_params)
-        initial_params[0] = np.log(matches_df[['home_goals', 'away_goals']].mean().mean())  # mu
+        initial_params[0] = np.log(training_matches[['home_goals', 'away_goals']].mean().mean())  # mu
         initial_params[1] = 0.2  # home advantage
         initial_params[2] = 0.0  # rho
         
@@ -131,11 +151,13 @@ class DixonColesPoisson:
             result = minimize(
                 self._negative_log_likelihood,
                 initial_params,
-                args=(matches_df, team_to_idx, weights),
+                args=(training_matches, team_to_idx, weights),
                 method='L-BFGS-B',
                 bounds=bounds,
                 options={'maxiter': 1000}
             )
+
+            self.last_result_ = result
             
             if result.success:
                 self.params = result.x
@@ -161,17 +183,17 @@ class DixonColesPoisson:
         if not self.is_fitted:
             raise ValueError("Model must be fitted before prediction")
         
+        n_teams = len(self.teams)
+        mu = self.params[0]
+        home_adv = self.params[1]
+        rho = self.params[2]
+        
         if home_team not in self.team_to_idx or away_team not in self.team_to_idx:
             # Handle unknown teams with league average
             home_attack = home_defense = away_attack = away_defense = 0.0
         else:
             home_idx = self.team_to_idx[home_team]
             away_idx = self.team_to_idx[away_team]
-            
-            n_teams = len(self.teams)
-            mu = self.params[0]
-            home_adv = self.params[1]
-            rho = self.params[2]
             
             # Reconstruct team strengths
             attacks = np.zeros(n_teams)

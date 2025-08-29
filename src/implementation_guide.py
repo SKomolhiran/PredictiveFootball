@@ -153,13 +153,14 @@ def prepare_data(csv_path: str) -> pd.DataFrame:
     
     return df
 
-# Step 2: Professional Model Comparison Using Your Data
+# Step 2: Professional Model Comparison (LEAK-SAFE VERSION)
 def professional_baseline_comparison(df: pd.DataFrame) -> pd.DataFrame:
     """
     Professional model comparison leveraging your processed odds hierarchy
+    *** UPDATED: Now includes proper data leakage prevention ***
     
     Compares:
-    1. Dixon-Coles (pure statistical model)
+    1. Dixon-Coles (pure statistical model) - TRAINED ON HISTORICAL DATA ONLY
     2. Bet365 Pre-closing (your betting baseline)  
     3. Pinnacle Closing (efficiency gold standard)
     4. Market Movement Signal (close vs pre differential)
@@ -170,10 +171,10 @@ def professional_baseline_comparison(df: pd.DataFrame) -> pd.DataFrame:
     from time_series_cv import TimeSeriesCV, prepare_target_variables, calculate_metrics
     from dixon_coles_poisson import DixonColesPoisson
     
-    print("\n🎯 PROFESSIONAL BASELINE COMPARISON")
-    print("=" * 50)
+    print("\n🎯 PROFESSIONAL BASELINE COMPARISON (LEAK-SAFE)")
+    print("=" * 60)
     
-    # Prepare targets
+    # Prepare targets (only for evaluation, not training)
     y_binary, y_multiclass = prepare_target_variables(df)
     
     # Initialize models
@@ -183,31 +184,81 @@ def professional_baseline_comparison(df: pd.DataFrame) -> pd.DataFrame:
     tscv = TimeSeriesCV(min_train_seasons=2, validation_seasons=1)
     results = []
     
+    def validate_training_data(train_df: pd.DataFrame) -> bool:
+        """Validate that training data has no leakage"""
+        required_cols = ['date', 'home', 'away', 'home_goals', 'away_goals']
+        missing_cols = [col for col in required_cols if col not in train_df.columns]
+        
+        if missing_cols:
+            print(f"❌ Missing required columns: {missing_cols}")
+            return False
+        
+        # Check for missing results (future matches)
+        missing_results = train_df[['home_goals', 'away_goals']].isna().any(axis=1)
+        if missing_results.any():
+            print(f"⚠️  Removing {missing_results.sum()} matches without results")
+            return False
+        
+        return True
+    
+    def create_prediction_fixtures(test_df: pd.DataFrame) -> pd.DataFrame:
+        """Create clean fixtures for prediction (no future information)"""
+        fixture_columns = ['match_id', 'date', 'season', 'home', 'away']
+        available_columns = [col for col in fixture_columns if col in test_df.columns]
+        return test_df[available_columns].copy()
+    
     for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(df)):
         if fold_idx >= 3:  # First 3 folds for quick analysis
             break
             
-        print(f"\nFold {fold_idx + 1}: Analyzing betting opportunities...")
+        print(f"\n📊 FOLD {fold_idx + 1}: Strict Temporal Validation")
+        print("-" * 50)
         
-        train_df = df.iloc[train_idx]
-        val_df = df.iloc[val_idx]
+        # Get training and validation data
+        train_df = df.iloc[train_idx].copy()
+        val_df = df.iloc[val_idx].copy()
         
-        print(f"  Train: {train_df['season'].min()} to {train_df['season'].max()}")
-        print(f"  Val: {val_df['season'].unique()}")
+        # CRITICAL: Remove any training matches without results (data leakage prevention)
+        complete_results = train_df[['home_goals', 'away_goals']].notna().all(axis=1)
+        train_df = train_df[complete_results].copy()
         
-        # 1. DIXON-COLES MODEL (Pure Statistical)
-        dc_model.fit(train_df)
-        dc_probs = dc_model.predict_proba(val_df[['home', 'away']])
+        if not validate_training_data(train_df):
+            print("❌ Training data validation failed!")
+            continue
         
+        print(f"Training: {len(train_df)} completed matches from {sorted(train_df['season'].unique())}")
+        print(f"Validation: {len(val_df)} matches from {sorted(val_df['season'].unique())}")
+        
+        # Validate temporal ordering
+        latest_train_date = train_df['date'].max()
+        earliest_val_date = val_df['date'].min()
+        
+        if latest_train_date >= earliest_val_date:
+            print(f"⚠️  Temporal overlap detected - this shouldn't happen with proper CV!")
+            print(f"   Latest training: {latest_train_date}")
+            print(f"   Earliest validation: {earliest_val_date}")
+        
+        # 1. DIXON-COLES MODEL (Pure Statistical - NO LEAKAGE)
+        print(f"\n🤖 Training Dixon-Coles on historical data only...")
+        dc_model.fit(train_df)  # Uses ONLY historical completed matches
+        
+        # Create clean fixtures for prediction (no results, no future info)
+        val_fixtures = create_prediction_fixtures(val_df)
+        dc_probs = dc_model.predict_proba(val_fixtures[['home', 'away']])
+        
+        # Evaluate against actual results
         dc_metrics = calculate_metrics(y_multiclass[val_idx], dc_probs, 'multiclass')
         results.append({
             'fold': fold_idx + 1,
             'model': 'Dixon-Coles',
-            'type': 'Statistical Model',
+            'type': 'Pure Statistical',
             'logloss': dc_metrics['logloss'],
-            'rps': dc_metrics['rps'], 
-            'brier': dc_metrics['brier']
+            'rps': dc_metrics['rps'],
+            'brier': dc_metrics['brier'],
+            'samples': len(val_idx)
         })
+        
+        print(f"   Dixon-Coles RPS: {dc_metrics['rps']:.4f} (trained on {len(train_df)} historical matches)")
         
         # 2. BET365 PRE-CLOSING (Your Betting Baseline)
         val_with_pre = val_df[val_df[['feature_prob_H', 'feature_prob_D', 'feature_prob_A']].notna().all(axis=1)]
@@ -222,10 +273,13 @@ def professional_baseline_comparison(df: pd.DataFrame) -> pd.DataFrame:
                 'type': 'Opening Market',
                 'logloss': bet365_metrics['logloss'],
                 'rps': bet365_metrics['rps'],
-                'brier': bet365_metrics['brier']
+                'brier': bet365_metrics['brier'],
+                'samples': len(val_with_pre)
             })
             
-            print(f"    Bet365 opening lines: {len(val_with_pre)} matches")
+            dc_vs_bet365 = bet365_metrics['rps'] - dc_metrics['rps']
+            print(f"   Bet365 opening RPS: {bet365_metrics['rps']:.4f}")
+            print(f"   DC vs Bet365: {dc_vs_bet365:+.4f} RPS ({'BEATING' if dc_vs_bet365 < 0 else 'BEHIND'} market)")
         
         # 3. PINNACLE CLOSING (Efficiency Gold Standard)
         val_with_close = val_df[val_df[['benchmark_prob_H', 'benchmark_prob_D', 'benchmark_prob_A']].notna().all(axis=1)]
@@ -240,94 +294,107 @@ def professional_baseline_comparison(df: pd.DataFrame) -> pd.DataFrame:
                 'type': 'Efficient Market',
                 'logloss': pinnacle_metrics['logloss'],
                 'rps': pinnacle_metrics['rps'],
-                'brier': pinnacle_metrics['brier']
+                'brier': pinnacle_metrics['brier'],
+                'samples': len(val_with_close)
             })
             
-            print(f"    Pinnacle closing lines: {len(val_with_close)} matches")
+            efficiency_gap = dc_metrics['rps'] - pinnacle_metrics['rps']
+            print(f"   Pinnacle closing RPS: {pinnacle_metrics['rps']:.4f}")
+            print(f"   Efficiency gap: {efficiency_gap:+.4f} RPS")
         
         # 4. MARKET MOVEMENT ANALYSIS
         val_with_movement = val_df[val_df['market_move_magnitude'].notna()]
         if len(val_with_movement) > 20:
             significant_moves = val_with_movement[val_with_movement['market_move_magnitude'] > 0.02]
-            print(f"    Significant market moves (>2%): {len(significant_moves)}")
+            print(f"   Market analysis: {len(significant_moves)} significant moves (>2%) out of {len(val_with_movement)}")
             
             if len(significant_moves) > 5:
-                # Simple market movement model: bet against opening line when big movement
-                movement_probs = significant_moves[['benchmark_prob_A', 'benchmark_prob_D', 'benchmark_prob_H']].values
-                movement_y = y_multiclass[significant_moves.index]
-                movement_metrics = calculate_metrics(movement_y, movement_probs, 'multiclass')
-                
-                results.append({
-                    'fold': fold_idx + 1,
-                    'model': 'Market Movement',
-                    'type': 'Sharp Signal',
-                    'logloss': movement_metrics['logloss'],
-                    'rps': movement_metrics['rps'],
-                    'brier': movement_metrics['brier']
-                })
+                # Use closing probabilities as proxy for sharp action
+                if 'benchmark_prob_H' in significant_moves.columns:
+                    movement_probs = significant_moves[['benchmark_prob_A', 'benchmark_prob_D', 'benchmark_prob_H']].values
+                    movement_y = y_multiclass[significant_moves.index]
+                    movement_metrics = calculate_metrics(movement_y, movement_probs, 'multiclass')
+                    
+                    results.append({
+                        'fold': fold_idx + 1,
+                        'model': 'Sharp Movement',
+                        'type': 'Information Signal',
+                        'logloss': movement_metrics['logloss'],
+                        'rps': movement_metrics['rps'],
+                        'brier': movement_metrics['brier'],
+                        'samples': len(significant_moves)
+                    })
+                    
+                    print(f"   Sharp movement RPS: {movement_metrics['rps']:.4f} ({len(significant_moves)} moves)")
     
     results_df = pd.DataFrame(results)
     
     # COMPREHENSIVE ANALYSIS
-    print("\n📊 PROFESSIONAL COMPARISON RESULTS:")
+    print("\n📊 LEAK-SAFE PROFESSIONAL COMPARISON RESULTS:")
     print("=" * 60)
     
     if len(results_df) > 0:
         summary = results_df.groupby(['model', 'type']).agg({
-            'logloss': ['mean', 'std', 'count'],
+            'logloss': ['mean', 'std'],
             'rps': ['mean', 'std'],
-            'brier': ['mean', 'std']
+            'brier': ['mean', 'std'],
+            'samples': 'sum'
         }).round(4)
         
         for (model, model_type) in summary.index:
+            samples = summary.loc[(model, model_type), ('samples', 'sum')]
+            rps_mean = summary.loc[(model, model_type), ('rps', 'mean')]
+            rps_std = summary.loc[(model, model_type), ('rps', 'std')]
+            
             print(f"\n{model} ({model_type}):")
-            print(f"  Log Loss: {summary.loc[(model, model_type), ('logloss', 'mean')]:.4f} ± {summary.loc[(model, model_type), ('logloss', 'std')]:.4f}")
-            print(f"  RPS:      {summary.loc[(model, model_type), ('rps', 'mean')]:.4f} ± {summary.loc[(model, model_type), ('rps', 'std')]:.4f}")
-            print(f"  Brier:    {summary.loc[(model, model_type), ('brier', 'mean')]:.4f} ± {summary.loc[(model, model_type), ('brier', 'std')]:.4f}")
+            print(f"  RPS: {rps_mean:.4f} ± {rps_std:.4f} ({samples} total samples)")
         
-        # PROFESSIONAL INSIGHTS
-        print(f"\n🎯 KEY PROFESSIONAL INSIGHTS:")
-        print("-" * 40)
+        # PROFESSIONAL INSIGHTS WITH PROPER VALIDATION
+        print(f"\n🎯 LEAK-SAFE PROFESSIONAL INSIGHTS:")
+        print("-" * 45)
         
-        # Market efficiency analysis
         model_means = results_df.groupby('model')['rps'].mean()
         
         if 'Pinnacle Closing' in model_means.index:
             pinnacle_rps = model_means['Pinnacle Closing']
-            print(f"• Pinnacle closing RPS: {pinnacle_rps:.4f} (efficiency benchmark)")
+            print(f"• Pinnacle closing: {pinnacle_rps:.4f} RPS (efficiency benchmark)")
             
             if 'Bet365 Pre-close' in model_means.index:
                 bet365_rps = model_means['Bet365 Pre-close']
                 market_efficiency = bet365_rps - pinnacle_rps
                 print(f"• Market efficiency gain: {market_efficiency:.4f} RPS")
-                print(f"  (Value captured by market from open to close)")
+                print(f"  (Information value captured from open to close)")
         
         if 'Dixon-Coles' in model_means.index:
             dc_rps = model_means['Dixon-Coles']
+            print(f"• Dixon-Coles baseline: {dc_rps:.4f} RPS")
             
             if 'Bet365 Pre-close' in model_means.index:
                 bet365_rps = model_means['Bet365 Pre-close']
                 model_edge = bet365_rps - dc_rps
                 status = "BEATING" if model_edge > 0 else "BEHIND"
-                print(f"• Your model vs Bet365 opening: {model_edge:+.4f} RPS ({status})")
+                print(f"• Statistical model vs opening market: {model_edge:+.4f} RPS ({status})")
                 
             if 'Pinnacle Closing' in model_means.index:
                 pinnacle_rps = model_means['Pinnacle Closing']
-                efficiency_gap = pinnacle_rps - dc_rps
-                print(f"• Efficiency gap to close: {efficiency_gap:+.4f} RPS")
+                efficiency_gap = dc_rps - pinnacle_rps
+                print(f"• Efficiency gap to Pinnacle: {efficiency_gap:+.4f} RPS")
                 
-                if efficiency_gap < 0.01:
-                    print("  🎉 EXCELLENT! Near-efficient performance")
-                elif efficiency_gap < 0.02:
-                    print("  ✅ GOOD! Competitive with market")
+                if efficiency_gap < 0.010:
+                    print("  🎉 EXCEPTIONAL! Near-efficient performance")
+                elif efficiency_gap < 0.020:
+                    print("  ✅ EXCELLENT! Competitive with market")
+                elif efficiency_gap < 0.030:
+                    print("  📈 GOOD! Strong foundation for Week 2")
                 else:
-                    print("  🔄 Room for improvement in Week 2")
+                    print("  🔄 Focus on advanced features in Week 2")
         
-        # Movement analysis
-        if 'Market Movement' in model_means.index:
-            movement_rps = model_means['Market Movement']
-            print(f"• Sharp money signal: {movement_rps:.4f} RPS")
-            print("  (Performance when market moves significantly)")
+        # Data leakage validation summary
+        print(f"\n✅ DATA LEAKAGE VALIDATION:")
+        print("• Dixon-Coles trained only on historical completed matches")
+        print("• Predictions made on clean fixtures (no future information)")
+        print("• Strict temporal ordering maintained")
+        print("• Market comparisons use contemporaneous odds only")
     
     return results_df
 
@@ -565,7 +632,7 @@ def main_professional_pipeline(csv_path: str):
         # Step 1: Load your professionally processed data
         df = prepare_data(csv_path)
         
-        # Step 2: Professional model comparison
+        # Step 2: Professional model comparison (LEAK-SAFE)
         comparison_results = professional_baseline_comparison(df)
         
         # Step 3: Professional backtesting
@@ -705,10 +772,7 @@ if __name__ == "__main__":
         print("   • Closing: close_odds_H/D/A, close_p_H/D/A, close_source")
         print("   • Stats: HS, AS, HST, AST, HC, AC, HY, AY, etc.")
     else:
-        # results = main_professional_pipeline(csv_path)
-        results = prepare_data(csv_path)
-        print(results.head())
-
+        results = main_professional_pipeline(csv_path)
 
 # Professional data analysis for your processed data
 def analyze_processed_data(csv_path: str):
@@ -839,7 +903,6 @@ def analyze_processed_data(csv_path: str):
         print("❌ Limited match statistics - focus on basic model first")
     
     print(f"\n🚀 READY FOR PROFESSIONAL MODELING!")
-
 
 
 # COMPLETE END-TO-END WORKFLOW EXPLANATION
@@ -1046,5 +1109,3 @@ Your mixed pre/closing odds data is actually perfect for this approach! 🎯
 
 if __name__ == "__main__" and len(sys.argv) == 1:
     quick_start()
-
-

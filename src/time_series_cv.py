@@ -45,7 +45,7 @@ def calculate_metrics(y_true: np.ndarray, y_pred_proba: np.ndarray,
     Calculate comprehensive probability-based metrics
     
     Args:
-        y_true: True labels (binary: 0/1, multiclass: 0/1/2 for A/D/H) ex. [[0],[2],[1],[1],....]
+        y_true: True labels (binary: 0/1, multiclass: 0/1/2 for A/D/H) ex. [[0],[2],[1],[1],....], got from prepare_target_variables
         y_pred_proba: Predicted probabilities: probabilities of that match ex. [[0.2,0.3,0.5],[0.3,0.3,0.4],....]
         task: 'binary' or 'multiclass'
     
